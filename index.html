@@ -453,24 +453,72 @@ addEventListener('wheel',stopByUser,{passive:true});addEventListener('touchstart
 addEventListener('keydown',e=>{if(['ArrowDown','ArrowUp','PageDown','PageUp','Home','End',' '].includes(e.key))stopByUser(e);});
 setIcon(); syncNav();
 
-/* ---------- background music ---------- */
+/* ---------- background music ----------
+   Plays music.mp3 if it sits next to index.html; otherwise a built-in, original
+   "kalyana melam" style tune is synthesised live (reed lead, drone, thavil and jalra). */
 const bgm=$('#bgm'),mBtn=$('#musicBtn'),mHint=$('#musicHint');
 const NOTE_ON='<svg viewBox="0 0 24 24"><path d="M9 17.5V6l10-2v11.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="17.5" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>',NOTE_OFF='<svg viewBox="0 0 24 24"><path d="M9 17.5V6l10-2v11.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".5"/><circle cx="6.5" cy="17.5" r="2.5" fill="currentColor" opacity=".5"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor" opacity=".5"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-let musicOk=false,musicWanted=true,resumeOnShow=false;
-const mIcon=()=>{const on=!bgm.paused;mBtn.innerHTML=on?NOTE_ON:NOTE_OFF;mBtn.classList.toggle('playing',on);mBtn.setAttribute('aria-label',on?'Mute music':'Play music');};
-const fadeVol=(to,ms,done)=>{const from=bgm.volume,t0=performance.now();const step=t=>{const k=Math.min(1,(t-t0)/ms);bgm.volume=Math.min(1,Math.max(0,from+(to-from)*k));k<1?requestAnimationFrame(step):done&&done();};requestAnimationFrame(step);};
-function playMusic(){if(!musicOk)return;bgm.volume=0;const pr=bgm.play();if(pr&&pr.then)pr.then(()=>{fadeVol(.75,2200);mHint.hidden=true;mIcon();}).catch(()=>{mIcon();});}
-function stopMusic(){fadeVol(0,600,()=>{bgm.pause();mIcon();});}
+const Melam=(()=>{let ctx=null,master,bus,lead,leadG,noise,timer=null,nextT=0,step=0,on=false;
+  const BPM=124,E=60/BPM/2,SA=293.66;   // eighth-note length, Sa = D4
+  const ST={S:0,R:2,G:4,M:5,P:7,D:9,N:11,"S'":12,"R'":14,"G'":16};
+  const A=[["P",1],["D",1],["P",2],["M",1],["G",1],["M",2],["G",1],["R",1],["G",1],["M",1],["P",4]];
+  const A2=[["P",1],["D",1],["S'",2],["N",1],["D",1],["P",2],["M",1],["G",1],["R",1],["G",1],["S",4]];
+  const B=[["S'",2],["S'",1],["R'",1],["S'",1],["N",1],["D",2],["N",1],["D",1],["P",1],["M",1],["P",4]];
+  const B2=[["D",1],["N",1],["S'",2],["N",1],["D",1],["P",1],["M",1],["G",2],["R",1],["G",1],["M",1],["R",1],["S",2]];
+  const C=[["G'",2],["R'",1],["S'",1],["R'",2],["S'",1],["N",1],["S'",2],["D",1],["N",1],["S'",4]];
+  const SONG=[A,A2,A,A2,B,B2,C,A2];
+  const MEL={};let pos=0;SONG.flat().forEach(([n,d])=>{MEL[pos]={f:SA*Math.pow(2,ST[n]/12),d};pos+=d;});const LEN=pos;
+  function init(){ctx=new (window.AudioContext||window.webkitAudioContext)();
+    master=ctx.createGain();master.gain.value=0;const comp=ctx.createDynamicsCompressor();master.connect(comp);comp.connect(ctx.destination);
+    bus=ctx.createGain();bus.connect(master);
+    const dly=ctx.createDelay(1),fb=ctx.createGain(),wet=ctx.createGain();dly.delayTime.value=.24;fb.gain.value=.28;wet.gain.value=.2;
+    bus.connect(dly);dly.connect(fb);fb.connect(dly);dly.connect(wet);wet.connect(master);
+    [[SA/2,.03],[SA*.749,.022],[SA,.012]].forEach(([f,g],i)=>{const o=ctx.createOscillator(),lp=ctx.createBiquadFilter(),gg=ctx.createGain(),lfo=ctx.createOscillator(),lg=ctx.createGain();
+      o.type='sawtooth';o.frequency.value=f;lp.type='lowpass';lp.frequency.value=650;gg.gain.value=g;lfo.frequency.value=.25+i*.13;lg.gain.value=g*.4;
+      lfo.connect(lg);lg.connect(gg.gain);o.connect(lp);lp.connect(gg);gg.connect(bus);o.start();lfo.start();});
+    lead=ctx.createOscillator();lead.type='sawtooth';lead.frequency.value=SA*1.5;
+    const vib=ctx.createOscillator(),vg=ctx.createGain();vib.frequency.value=5.6;vg.gain.value=4.5;vib.connect(vg);vg.connect(lead.frequency);
+    const bp=ctx.createBiquadFilter(),lp2=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=1500;bp.Q.value=.7;lp2.type='lowpass';lp2.frequency.value=3800;
+    leadG=ctx.createGain();leadG.gain.value=0;lead.connect(bp);bp.connect(lp2);lp2.connect(leadG);leadG.connect(bus);lead.start();vib.start();
+    noise=ctx.createBuffer(1,ctx.sampleRate*.5,ctx.sampleRate);const ch=noise.getChannelData(0);for(let i=0;i<ch.length;i++)ch[i]=Math.random()*2-1;}
+  const env=(g,t,peak,dec)=>{g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(peak,t+.004);g.gain.exponentialRampToValueAtTime(.0008,t+dec);};
+  function kick(t,a){const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.setValueAtTime(160,t);o.frequency.exponentialRampToValueAtTime(52,t+.13);env(g,t,.55*a,.28);o.connect(g);g.connect(bus);o.start(t);o.stop(t+.3);}
+  function slap(t,a){const s=ctx.createBufferSource(),f=ctx.createBiquadFilter(),g=ctx.createGain();s.buffer=noise;f.type='bandpass';f.frequency.value=950;f.Q.value=1.4;env(g,t,.42*a,.09);s.connect(f);f.connect(g);g.connect(bus);s.start(t);s.stop(t+.12);
+    const o=ctx.createOscillator(),g2=ctx.createGain();o.frequency.value=360;env(g2,t,.12*a,.07);o.connect(g2);g2.connect(bus);o.start(t);o.stop(t+.1);}
+  function jalra(t,a){const s=ctx.createBufferSource(),f=ctx.createBiquadFilter(),g=ctx.createGain();s.buffer=noise;f.type='highpass';f.frequency.value=6500;env(g,t,.07*a,.06);s.connect(f);f.connect(g);g.connect(bus);s.start(t);s.stop(t+.08);}
+  function note(t,f,d){const L=d*E;lead.frequency.setTargetAtTime(f,t,.022);
+    leadG.gain.setTargetAtTime(.035,t-.012,.006);leadG.gain.setTargetAtTime(.15,t+.01,.02);leadG.gain.setTargetAtTime(.11,t+L*.55,.08);}
+  function tick(){while(nextT<ctx.currentTime+.18){const t=nextT,s=step%LEN,b=s%8;
+      if(b===0)kick(t,1);if(b===3||b===6)kick(t,.7);if(b===4)kick(t,.85);
+      if(b===2||b===5||b===7)slap(t,b===5?1:.75);
+      if(b%2===1)jalra(t,.9);else jalra(t,.4);
+      if(MEL[s])note(t,MEL[s].f,MEL[s].d);
+      nextT+=E;step++;}}
+  return{start(){if(!ctx)init();const r=ctx.resume();if(!timer){nextT=ctx.currentTime+.12;timer=setInterval(tick,25);}
+      master.gain.cancelScheduledValues(ctx.currentTime);master.gain.setTargetAtTime(.8,ctx.currentTime,.7);on=true;return r;},
+    stop(){on=false;if(!ctx)return;master.gain.cancelScheduledValues(ctx.currentTime);master.gain.setTargetAtTime(0,ctx.currentTime,.15);
+      setTimeout(()=>{if(!on){clearInterval(timer);timer=null;ctx.suspend();}},700);},
+    get playing(){return on&&!!ctx&&ctx.state==='running';}};})();
+let mode='synth',musicWanted=true,resumeOnShow=false;
+const isOn=()=>mode==='file'?!bgm.paused:Melam.playing;
+const mIcon=()=>{const o=isOn();mBtn.innerHTML=o?NOTE_ON:NOTE_OFF;mBtn.classList.toggle('playing',o);mBtn.setAttribute('aria-label',o?'Mute music':'Play music');};
+const fadeVol=(to,ms,done)=>{const from=bgm.volume,t0=performance.now();const st=t=>{const k=Math.min(1,(t-t0)/ms);bgm.volume=Math.min(1,Math.max(0,from+(to-from)*k));k<1?requestAnimationFrame(st):done&&done();};requestAnimationFrame(st);};
+function playMusic(){
+  if(mode==='file'){bgm.volume=0;const pr=bgm.play();if(pr&&pr.then)pr.then(()=>{fadeVol(.75,2200);mHint.hidden=true;mIcon();}).catch(()=>mIcon());}
+  else{const r=Melam.start();Promise.resolve(r).then(()=>{if(Melam.playing)mHint.hidden=true;mIcon();});}}
+function stopMusic(){if(mode==='file')fadeVol(0,600,()=>{bgm.pause();mIcon();});else{Melam.stop();setTimeout(mIcon,50);}}
+mBtn.hidden=false;mIcon();
 if(CONFIG.musicSrc){
-  bgm.addEventListener('canplay',()=>{if(musicOk)return;musicOk=true;mBtn.hidden=false;mIcon();playMusic();},{once:true});   // try autoplay; most phones wait for a tap
-  bgm.addEventListener('error',()=>{musicOk=false;mBtn.hidden=true;mHint.hidden=true;});
+  bgm.addEventListener('canplay',()=>{if(mode==='file')return;mode='file';Melam.stop();playMusic();},{once:true});   // own song found: use it
+  bgm.addEventListener('error',()=>{mode='synth';});
   bgm.src=CONFIG.musicSrc;
 }
-mBtn.onclick=()=>{if(bgm.paused){musicWanted=true;playMusic();}else{musicWanted=false;stopMusic();}};
-const firstGesture=e=>{if(e.target.closest&&e.target.closest('#musicBtn'))return;if(musicOk&&musicWanted&&bgm.paused)playMusic();};
+mBtn.onclick=()=>{if(isOn()){musicWanted=false;stopMusic();}else{musicWanted=true;playMusic();}};
+const firstGesture=e=>{if(e.target.closest&&e.target.closest('#musicBtn'))return;if(musicWanted&&!isOn())playMusic();};
 ['pointerdown','touchend','keydown'].forEach(ev=>addEventListener(ev,firstGesture,{passive:true}));
-document.addEventListener('visibilitychange',()=>{if(document.hidden){resumeOnShow=!bgm.paused;bgm.pause();mIcon();}else if(resumeOnShow&&musicWanted)playMusic();});
-const showHint=()=>{if(musicOk&&bgm.paused&&musicWanted){mHint.hidden=false;setTimeout(()=>mHint.hidden=true,6000);}};
+document.addEventListener('visibilitychange',()=>{if(document.hidden){resumeOnShow=isOn();if(resumeOnShow)stopMusic();}else if(resumeOnShow&&musicWanted)playMusic();});
+setTimeout(()=>{if(musicWanted&&!isOn())playMusic();},400);   // try to start right away; phones usually wait for the first tap
+const showHint=()=>{if(musicWanted&&!isOn()){mHint.hidden=false;setTimeout(()=>mHint.hidden=true,6000);}};
 
 /* ---------- motion ---------- */
 let intro=null;
